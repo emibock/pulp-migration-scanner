@@ -1,0 +1,18 @@
+[project]
+name = "pulp-migration-scanner"
+version = "0.1.0"
+description = "Scan Pulp releases for migration requirements between versions"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "click>=8.1.0",
+    "packaging>=23.0",
+]
+
+[project.scripts]
+pulp-scan = "pulp_migration_scanner:cli"
+pulp-scan-v2 = "pulp_scanner_v2:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

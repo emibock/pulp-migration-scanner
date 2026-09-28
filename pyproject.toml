@@ -13,6 +13,10 @@ dependencies = [
 pulp-scan = "pulp_migration_scanner:cli"
 pulp-scan-v2 = "pulp_scanner_v2:cli"
 
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["pulp_migration_scanner.py", "pulp_scanner_v2.py"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

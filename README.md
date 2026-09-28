@@ -12,10 +12,11 @@ Enhanced scanner that parses structured CHANGES.md changelogs and checks migrati
 - Lower false positive rate
 - Better categorization (removals, deprecations, migrations, breaking changes)
 - Severity levels (critical, high, medium, low)
+- **Caching**: 3x faster on repeat runs (24-hour cache TTL)
 
 **Usage:**
 ```bash
-# Basic scan
+# Basic scan (uses cache)
 pulp-scan-v2 3.85.0 3.118.0
 
 # Check migration files too (git diff)
@@ -23,6 +24,12 @@ pulp-scan-v2 3.85.0 3.118.0 --check-migrations
 
 # Filter by severity
 pulp-scan-v2 3.85.0 3.118.0 --min-severity high
+
+# Bypass cache (force fresh fetch)
+pulp-scan-v2 3.85.0 3.118.0 --no-cache
+
+# Clear cache
+pulp-scan-v2 --clear-cache
 
 # With GitHub token (for higher API rate limits)
 export GITHUB_TOKEN=ghp_xxxxx
@@ -130,6 +137,8 @@ Options:
                                   Check migration files via git diff (default: yes)
   --min-severity [low|medium|high|critical]
                                   Minimum severity to report (default: low)
+  --no-cache                      Bypass cache and fetch fresh data
+  --clear-cache                   Clear cache and exit
 ```
 
 ### V1 Scanner
@@ -174,7 +183,14 @@ Options:
    pulp-scan-v2 3.85.0 3.118.0 --no-check-migrations
    ```
 
-4. **Scan incrementally** for large version jumps:
+4. **Clear cache** if you want latest data:
+   ```bash
+   pulp-scan-v2 --clear-cache
+   ```
+   Cache location: `~/.cache/pulp-migration-scanner/`
+   Cache TTL: 24 hours
+
+5. **Scan incrementally** for large version jumps:
    ```bash
    pulp-scan-v2 3.85.0 3.100.0
    pulp-scan-v2 3.100.0 3.118.0

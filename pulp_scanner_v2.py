@@ -3,6 +3,10 @@
 
 import re
 import sys
+import os
+import time
+import hashlib
+from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass, field
 from packaging import version
@@ -19,6 +23,10 @@ PULP_REPOS = {
     "pulp_ansible": "pulp/pulp_ansible",
     "pulp_file": "pulp/pulp_file",
 }
+
+# Cache configuration
+CACHE_DIR = Path.home() / ".cache" / "pulp-migration-scanner"
+CACHE_TTL = 24 * 60 * 60  # 24 hours in seconds
 
 
 @dataclass
@@ -63,8 +71,53 @@ def fetch_paginated(url: str, token: Optional[str] = None) -> List[Dict]:
     return results
 
 
-def fetch_changelog(repo: str, token: Optional[str] = None) -> str:
-    """Fetch CHANGES.md from repository."""
+def get_cache_path(repo: str) -> Path:
+    """Get cache file path for a repository."""
+    # Use repo path as filename (replace / with -)
+    cache_name = repo.replace("/", "-") + "-CHANGES.md"
+    return CACHE_DIR / cache_name
+
+
+def is_cache_valid(cache_path: Path) -> bool:
+    """Check if cache file exists and is not expired."""
+    if not cache_path.exists():
+        return False
+
+    # Check age
+    age = time.time() - cache_path.stat().st_mtime
+    return age < CACHE_TTL
+
+
+def read_cache(cache_path: Path) -> str:
+    """Read content from cache file."""
+    return cache_path.read_text(encoding='utf-8')
+
+
+def write_cache(cache_path: Path, content: str):
+    """Write content to cache file."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(content, encoding='utf-8')
+
+
+def clear_cache():
+    """Remove all cached files."""
+    if CACHE_DIR.exists():
+        import shutil
+        shutil.rmtree(CACHE_DIR)
+        click.echo(f"Cache cleared: {CACHE_DIR}")
+    else:
+        click.echo("Cache directory does not exist")
+
+
+def fetch_changelog(repo: str, token: Optional[str] = None, use_cache: bool = True) -> str:
+    """Fetch CHANGES.md from repository with caching."""
+    cache_path = get_cache_path(repo)
+
+    # Try cache first
+    if use_cache and is_cache_valid(cache_path):
+        return read_cache(cache_path)
+
+    # Fetch from network
     url = f"https://raw.githubusercontent.com/{repo}/main/CHANGES.md"
     headers = {}
     if token:
@@ -80,7 +133,13 @@ def fetch_changelog(repo: str, token: Optional[str] = None) -> str:
                 break
 
     response.raise_for_status()
-    return response.text
+    content = response.text
+
+    # Cache the result
+    if use_cache:
+        write_cache(cache_path, content)
+
+    return content
 
 
 def parse_changelog_md(content: str, from_ver: version.Version, to_ver: version.Version) -> List[Dict]:
@@ -272,13 +331,15 @@ def analyze_changelog_entry(entry: Dict) -> Optional[MigrationFinding]:
 
 
 @click.command()
-@click.argument("from_version")
-@click.argument("to_version")
+@click.argument("from_version", required=False)
+@click.argument("to_version", required=False)
 @click.option("--token", envvar="GITHUB_TOKEN", help="GitHub API token")
 @click.option("--repo", multiple=True, help="Additional repo (name:owner/repo)")
 @click.option("--check-migrations/--no-check-migrations", default=True, help="Check migration files via git diff")
 @click.option("--min-severity", type=click.Choice(['low', 'medium', 'high', 'critical']), default='low', help="Minimum severity to report")
-def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_migrations: bool, min_severity: str):
+@click.option("--no-cache", is_flag=True, help="Bypass cache and fetch fresh data")
+@click.option("--clear-cache", "clear_cache_opt", is_flag=True, help="Clear cache and exit")
+def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_migrations: bool, min_severity: str, no_cache: bool, clear_cache_opt: bool):
     """
     Enhanced Pulp migration scanner.
 
@@ -287,7 +348,19 @@ def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_
     Example:
         pulp-scan-v2 3.85.0 3.118.0
         pulp-scan-v2 3.85.0 3.118.0 --min-severity high
+        pulp-scan-v2 3.85.0 3.118.0 --no-cache
+        pulp-scan-v2 --clear-cache
     """
+    # Handle cache clearing
+    if clear_cache_opt:
+        clear_cache()
+        return
+
+    # Require version arguments for normal operation
+    if not from_version or not to_version:
+        raise click.UsageError("FROM_VERSION and TO_VERSION are required (unless using --clear-cache)")
+
+    use_cache = not no_cache
     repos = dict(PULP_REPOS)
     for r in repo:
         if ':' in r:
@@ -298,7 +371,9 @@ def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_
     to_ver = parse_version(to_version)
 
     click.echo(f"Scanning Pulp: {from_version} → {to_version}\n")
-    click.echo(f"Data sources: CHANGES.md{' + migration files' if check_migrations else ''}\n")
+    cache_status = "cache disabled" if no_cache else f"cache: {CACHE_DIR}"
+    click.echo(f"Data sources: CHANGES.md{' + migration files' if check_migrations else ''}")
+    click.echo(f"Cache: {cache_status}\n")
 
     all_findings = []
     severity_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
@@ -306,8 +381,10 @@ def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_
 
     for repo_name, repo_path in repos.items():
         try:
-            click.echo(f"[{repo_name}] Fetching CHANGES.md...", nl=False)
-            changelog = fetch_changelog(repo_path, token)
+            cache_hit = use_cache and is_cache_valid(get_cache_path(repo_path))
+            status = "(cached)" if cache_hit else "(fetching)"
+            click.echo(f"[{repo_name}] CHANGES.md {status}...", nl=False)
+            changelog = fetch_changelog(repo_path, token, use_cache)
             entries = parse_changelog_md(changelog, from_ver, to_ver)
             click.echo(f" {len(entries)} relevant entries")
 

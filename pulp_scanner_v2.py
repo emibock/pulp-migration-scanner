@@ -51,6 +51,55 @@ def parse_version(version_str: str) -> version.Version:
         return version.Version("0.0.0")
 
 
+def extract_all_versions(changelog: str) -> List[str]:
+    """Extract all version numbers from changelog."""
+    versions = []
+    for line in changelog.split('\n'):
+        match = re.match(r'^##\s+(?:YANKED\s+)?([0-9]+\.[0-9]+\.[0-9]+)', line)
+        if match:
+            versions.append(match.group(1))
+    return versions
+
+
+def resolve_fuzzy_version(partial: str, available_versions: List[str]) -> Optional[str]:
+    """
+    Resolve partial version to latest matching full version.
+
+    Examples:
+        "3.85" → "3.85.31" (latest in 3.85.x)
+        "3" → "3.119.1" (latest in 3.x.x)
+        "3.85.0" → "3.85.0" (exact match)
+    """
+    partial = partial.lstrip('v')
+    parts = partial.split('.')
+
+    # Exact match if already full version
+    if len(parts) == 3 and partial in available_versions:
+        return partial
+
+    # Build pattern based on number of parts provided
+    if len(parts) == 1:
+        # Major only: match X.*.*
+        pattern = re.compile(rf'^{re.escape(parts[0])}\.\d+\.\d+$')
+    elif len(parts) == 2:
+        # Major.Minor: match X.Y.*
+        pattern = re.compile(rf'^{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+$')
+    else:
+        # Already 3 parts or more, try exact match
+        if partial in available_versions:
+            return partial
+        return None
+
+    # Find all matching versions
+    matches = [v for v in available_versions if pattern.match(v)]
+
+    if not matches:
+        return None
+
+    # Return latest
+    return max(matches, key=parse_version)
+
+
 def fetch_paginated(url: str, token: Optional[str] = None) -> List[Dict]:
     """Fetch all pages from GitHub API."""
     headers = {"Accept": "application/vnd.github+json"}
@@ -367,10 +416,39 @@ def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_
             name, path = r.split(':', 1)
             repos[name] = path
 
-    from_ver = parse_version(from_version)
-    to_ver = parse_version(to_version)
+    # Fetch changelog from primary repo to resolve fuzzy versions
+    primary_repo = repos['pulpcore']
+    changelog = fetch_changelog(primary_repo, token, use_cache)
+    available_versions = extract_all_versions(changelog)
 
-    click.echo(f"Scanning Pulp: {from_version} → {to_version}\n")
+    # Resolve fuzzy versions
+    resolved_from = resolve_fuzzy_version(from_version, available_versions)
+    resolved_to = resolve_fuzzy_version(to_version, available_versions)
+
+    if not resolved_from:
+        click.echo(f"Error: Could not resolve FROM_VERSION '{from_version}'", err=True)
+        click.echo(f"Available versions: {', '.join(sorted(available_versions, key=parse_version)[-10:])}", err=True)
+        sys.exit(1)
+
+    if not resolved_to:
+        click.echo(f"Error: Could not resolve TO_VERSION '{to_version}'", err=True)
+        click.echo(f"Available versions: {', '.join(sorted(available_versions, key=parse_version)[-10:])}", err=True)
+        sys.exit(1)
+
+    from_ver = parse_version(resolved_from)
+    to_ver = parse_version(resolved_to)
+
+    # Validate version order
+    if from_ver >= to_ver:
+        click.echo(f"Error: FROM_VERSION ({resolved_from}) must be less than TO_VERSION ({resolved_to})", err=True)
+        sys.exit(1)
+
+    # Show resolution if fuzzy matching was used
+    version_display = f"{from_version} → {to_version}"
+    if resolved_from != from_version or resolved_to != to_version:
+        version_display += f" (resolved: {resolved_from} → {resolved_to})"
+
+    click.echo(f"Scanning Pulp: {version_display}\n")
     cache_status = "cache disabled" if no_cache else f"cache: {CACHE_DIR}"
     click.echo(f"Data sources: CHANGES.md{' + migration files' if check_migrations else ''}")
     click.echo(f"Cache: {cache_status}\n")
@@ -381,11 +459,17 @@ def cli(from_version: str, to_version: str, token: str, repo: Tuple[str], check_
 
     for repo_name, repo_path in repos.items():
         try:
-            cache_hit = use_cache and is_cache_valid(get_cache_path(repo_path))
-            status = "(cached)" if cache_hit else "(fetching)"
-            click.echo(f"[{repo_name}] CHANGES.md {status}...", nl=False)
-            changelog = fetch_changelog(repo_path, token, use_cache)
-            entries = parse_changelog_md(changelog, from_ver, to_ver)
+            # Use already-fetched changelog for pulpcore
+            if repo_path == primary_repo:
+                repo_changelog = changelog
+                click.echo(f"[{repo_name}] CHANGES.md (primary)...", nl=False)
+            else:
+                cache_hit = use_cache and is_cache_valid(get_cache_path(repo_path))
+                status = "(cached)" if cache_hit else "(fetching)"
+                click.echo(f"[{repo_name}] CHANGES.md {status}...", nl=False)
+                repo_changelog = fetch_changelog(repo_path, token, use_cache)
+
+            entries = parse_changelog_md(repo_changelog, from_ver, to_ver)
             click.echo(f" {len(entries)} relevant entries")
 
             # Analyze each entry

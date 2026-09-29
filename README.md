@@ -13,27 +13,29 @@ Enhanced scanner that parses structured CHANGES.md changelogs and checks migrati
 - Better categorization (removals, deprecations, migrations, breaking changes)
 - Severity levels (critical, high, medium, low)
 - **Caching**: 3x faster on repeat runs (24-hour cache TTL)
+- **Fuzzy version matching**: Use `3.85` instead of `3.85.31` (resolves to latest)
 
 **Usage:**
 ```bash
-# Basic scan (uses cache)
-pulp-scan-v2 3.85.0 3.118.0
+# Basic scan (uses cache, supports fuzzy versions)
+pulp-scan-v2 3.85 3.118         # Resolves to latest patch versions
+pulp-scan-v2 3.85.0 3.118.0     # Exact versions
 
 # Check migration files too (git diff)
-pulp-scan-v2 3.85.0 3.118.0 --check-migrations
+pulp-scan-v2 3.85 3.118 --check-migrations
 
 # Filter by severity
-pulp-scan-v2 3.85.0 3.118.0 --min-severity high
+pulp-scan-v2 3.85 3.118 --min-severity high
 
 # Bypass cache (force fresh fetch)
-pulp-scan-v2 3.85.0 3.118.0 --no-cache
+pulp-scan-v2 3.85 3.118 --no-cache
 
 # Clear cache
 pulp-scan-v2 --clear-cache
 
 # With GitHub token (for higher API rate limits)
 export GITHUB_TOKEN=ghp_xxxxx
-pulp-scan-v2 3.85.0 3.118.0
+pulp-scan-v2 3.85 3.118
 ```
 
 ## V1 Scanner (Original)
@@ -87,9 +89,9 @@ python pulp_scanner_v2.py 3.85.0 3.118.0
 ## Output Example
 
 ```
-Scanning Pulp: 3.85.0 → 3.118.0
+Scanning Pulp: 3.85 → 3.118 (resolved: 3.85.31 → 3.118.1)
 
-[pulpcore] Fetching CHANGES.md... 187 relevant entries
+[pulpcore] CHANGES.md (primary)... 187 relevant entries
 [pulpcore] Checking migration files... 24 new migrations
 
 ================================================================================
@@ -168,32 +170,38 @@ Options:
 
 ## Tips
 
-1. **Use GitHub token** to avoid rate limits:
+1. **Use fuzzy versions** for convenience:
+   ```bash
+   pulp-scan-v2 3.85 3.118    # Resolves to 3.85.31 → 3.118.1
+   pulp-scan-v2 3.100 3.115   # Resolves to latest patch in each
+   ```
+
+2. **Use GitHub token** to avoid rate limits:
    ```bash
    export GITHUB_TOKEN=ghp_xxxxx
    ```
 
-2. **Start with high severity** to see critical issues:
+3. **Start with high severity** to see critical issues:
    ```bash
-   pulp-scan-v2 3.85.0 3.118.0 --min-severity high
+   pulp-scan-v2 3.85 3.118 --min-severity high
    ```
 
-3. **Disable migration checks** for faster scans:
+4. **Disable migration checks** for faster scans:
    ```bash
-   pulp-scan-v2 3.85.0 3.118.0 --no-check-migrations
+   pulp-scan-v2 3.85 3.118 --no-check-migrations
    ```
 
-4. **Clear cache** if you want latest data:
+5. **Clear cache** if you want latest data:
    ```bash
    pulp-scan-v2 --clear-cache
    ```
    Cache location: `~/.cache/pulp-migration-scanner/`
    Cache TTL: 24 hours
 
-5. **Scan incrementally** for large version jumps:
+6. **Scan incrementally** for large version jumps:
    ```bash
-   pulp-scan-v2 3.85.0 3.100.0
-   pulp-scan-v2 3.100.0 3.118.0
+   pulp-scan-v2 3.85 3.100
+   pulp-scan-v2 3.100 3.118
    ```
 
 ## Files
